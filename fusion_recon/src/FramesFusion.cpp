@@ -1091,6 +1091,10 @@ void FramesFusion::HandlePointClouds(const sensor_msgs::PointCloud2 & vLaserData
 			if(confidence[i] > confidence_scalar) confidence[i] = confidence_scalar;
 			if(temp[i].data_c[1] > 1 || temp[i].data_n[3] == .0f) confidence[i] = -1;
 		}
+		// Publish the fused volume on the configured primary output topic as well.
+		// Previously this data was only sent to the debug confidence topic, leaving
+		// /fusion_recon/recon_processed_clouds advertised but permanently empty.
+		PublishPointCloud(temp);
 		PublishPointCloud(temp, confidence, "/fusion_recon/all_cloud_confidence");
 		fuse_timer.DebugTime("4_debug_publish");
 	}

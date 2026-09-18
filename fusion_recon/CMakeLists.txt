@@ -13,7 +13,6 @@ add_compile_options(-std=c++17)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-             OpenCV
              pcl_ros
              roscpp
              rospy
@@ -25,6 +24,8 @@ find_package(catkin REQUIRED COMPONENTS
              filters
 )
 
+find_package(OpenCV REQUIRED)
+
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES record_odomlaser
@@ -34,8 +35,9 @@ catkin_package(
 
 
 include_directories(
-	include
+    include
     ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
     #${OCTOMAP_INCLUDE_DIRS}
 )
 
@@ -47,4 +49,4 @@ aux_source_directory(src/tools DIR_SRCS)
 add_executable(fusion_recon ${DIR_SRCS})
 
 
-target_link_libraries(fusion_recon ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(fusion_recon ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})

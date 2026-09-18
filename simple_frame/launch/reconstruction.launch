@@ -20,16 +20,19 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
     <arg name="sf_output_path" default="" />
 
-    <!-- use aloam -->
-    <arg name="sub_odom_topic" default="/aloam/velodyne_cloud_registered" />
-    <arg name="sub_cloud_topic" default="/aloam/aft_mapped_to_init" />
+    <!-- A-LOAM inputs: odometry and registered point cloud, respectively. -->
+    <arg name="sub_odom_topic" default="/aft_mapped_to_init" />
+    <arg name="sub_cloud_topic" default="/velodyne_cloud_registered" />
 
     <!-- lidar type -->
     <!-- 雷达类型，确定其数据包解包方式 [Velodyne[VLP16 HDL32] Hesai[Pandar40] OTHER[SLAM 或其他数据来源] ]-->
     <arg name="lidar_type" default="VLP16"/>
-    <arg name="lidar_frame_id" default="lidar_sensor_VLP16"/>
-    <arg name="base_link_frame_id" default="base_link"/>
+    <!-- A-LOAM input data is in camera_init; reconstructed results use odom. -->
+    <arg name="lidar_frame_id" default="camera_init"/>
+    <arg name="base_link_frame_id" default="camera_init"/>
     <arg name="odom_frame_id" default="odom"/>
+    <!-- Publish the identity transform required by FrameRecon's TF lookup. -->
+    <arg name="publish_camera_init_to_odom_tf" default="true"/>
 
     <!-- in-outdoor -->
     <arg if="$(eval arg('lidar_type') == 'OTHER')" name="lidar_line_min" default="0" />
@@ -58,6 +61,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
     <!-- simple reconstruction (Adjacency method)-->
     <arg name="show_confidence" default="false"/>
     <arg name="combine_clouds" default="false"/>
+
+    <!-- Equivalent to: rosrun tf static_transform_publisher 0 0 0 0 0 0 camera_init odom 10 -->
+    <node if="$(arg publish_camera_init_to_odom_tf)" name="camera_init_to_odom_tf" pkg="tf" type="static_transform_publisher"
+          args="0 0 0 0 0 0 $(arg lidar_frame_id) $(arg odom_frame_id) 10" />
 
     <!-- frame_reconstruction node in frame_reconstruction pkg-->
     <node name="simple_frame" pkg="simple_frame" type="simple_frame" output="screen">
@@ -92,7 +99,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 	    <!-- height of viewpoint -->
         <param name="viewp_zoffset" type="double" value="$(arg viewp_zoffset)"/>
       
-        <param name="is_multi_thread" type="bool" value="$(arg is_multi_thread)" />
+        <param name="multi_thread" type="bool" value="$(arg is_multi_thread)" />
         <!-- Whether to display debug information -->
         <param name="is_debug" type="bool" value="$(arg is_debug)" />
 

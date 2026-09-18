@@ -1,0 +1,29 @@
+<launch>
+    <!--
+      Generic A-LOAM launcher.  Its defaults are for a VLP-16; override these
+      arguments for another Velodyne, for example:
+        roslaunch aloam_velodyne aloam_velodyne.launch scan_line:=32
+    -->
+    <arg name="scan_line" default="16" />
+    <arg name="mapping_skip_frame" default="1" />
+    <arg name="minimum_range" default="0.3" />
+    <arg name="mapping_line_resolution" default="0.2" />
+    <arg name="mapping_plane_resolution" default="0.4" />
+    <arg name="rviz" default="true" />
+
+    <param name="scan_line" type="int" value="$(arg scan_line)" />
+    <!-- 1 maps at 10 Hz; 2 maps at 5 Hz. -->
+    <param name="mapping_skip_frame" type="int" value="$(arg mapping_skip_frame)" />
+    <param name="minimum_range" type="double" value="$(arg minimum_range)" />
+    <param name="mapping_line_resolution" type="double" value="$(arg mapping_line_resolution)" />
+    <param name="mapping_plane_resolution" type="double" value="$(arg mapping_plane_resolution)" />
+
+    <node pkg="aloam_velodyne" type="ascanRegistration" name="ascanRegistration" output="screen" />
+    <node pkg="aloam_velodyne" type="alaserOdometry" name="alaserOdometry" output="screen" />
+    <node pkg="aloam_velodyne" type="alaserMapping" name="alaserMapping" output="screen" />
+
+    <group if="$(arg rviz)">
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz"
+              args="-d $(find aloam_velodyne)/rviz_cfg/aloam_velodyne.rviz" />
+    </group>
+</launch>

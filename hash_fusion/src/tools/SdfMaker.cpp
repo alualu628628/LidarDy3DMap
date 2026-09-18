@@ -6,7 +6,6 @@
 SdfMaker::SdfMaker()
 {
     m_pDevice = InitializeDevice(NULL);
-    SetDefaultIntersectMode();
 }
 
 SdfMaker::~SdfMaker()
@@ -38,7 +37,7 @@ void SdfMaker::NewScene(const pcl::PointCloud<pcl::PointXYZI> & vClouds, const s
 }
 
 // second query
-void SdfMaker::QuerySdf(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel> & vQueryPoints, const int iSectorId) 
+void SdfMaker::QuerySdf(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel> & vQueryPoints, const int iSectorId)
 {
     // get ref of the scene id 
     RTCScene& scene = m_vpScene[iSectorId];
@@ -49,7 +48,10 @@ void SdfMaker::QuerySdf(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::D
         return;
     }
 
-    // do query
+    // The bundled Embree runtime is not stable under concurrent packet queries.
+    // Keep the critical section narrow: scene construction and the caller's
+    // surrounding voxel work can still run in parallel.
+    std::lock_guard<std::mutex> lock(m_oIntersectMutex);
     CastRay(scene, oViewPoint, vQueryPoints);
 }
 
@@ -135,17 +137,7 @@ RTCDevice SdfMaker::InitializeDevice(const char* config)
     return m_pDevice;
 }
 
-void SdfMaker::SetDefaultIntersectMode() 
-{
-    rtcInitIntersectArguments(&m_oIntersectArgument);
-
-    // do not affect speed in this application
-    // coherent mode for rays start from same point (the lidar center)
-    m_oIntersectArgument.flags = RTC_RAY_QUERY_FLAG_COHERENT;
-    // m_oIntersectArgument.flags = RTC_RAY_QUERY_FLAG_INCOHERENT; // default
-}
-
-RTCScene SdfMaker::PushSingleMeshToScene(const pcl::PointCloud<pcl::PointXYZI> & vClouds, const std::vector<pcl::Vertices> & vMeshVertices) 
+RTCScene SdfMaker::PushSingleMeshToScene(const pcl::PointCloud<pcl::PointXYZI> & vClouds, const std::vector<pcl::Vertices> & vMeshVertices)
 {
     RTCScene scene = rtcNewScene(m_pDevice);
     
@@ -194,8 +186,14 @@ RTCScene SdfMaker::PushSingleMeshToScene(const pcl::PointCloud<pcl::PointXYZI> &
 
 // 8ray 打包，有用但不多
 #define RAY_PACKAGE_8
-std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oViewPoint, const pcl::PointCloud<pcl::PointXYZ>& vQueryPoints) 
+std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oViewPoint, const pcl::PointCloud<pcl::PointXYZ>& vQueryPoints)
 {
+    // Embree receives a non-const arguments pointer.  Keep it local so parallel
+    // sector queries never share mutable query state.
+    RTCIntersectArguments intersectArguments;
+    rtcInitIntersectArguments(&intersectArguments);
+    intersectArguments.flags = RTC_RAY_QUERY_FLAG_COHERENT;
+
     // const params
     constexpr int bit_move = 3;
     constexpr int ray_group_size = 1 << bit_move;
@@ -217,7 +215,7 @@ std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oView
     for(int i = vQueryPoints.size(); i < iListSize; ++i) vValidList[i] = invalid_mask;
 
     // make rayhit packages
-    RTCRayHit8 rayhit;
+    RTCRayHit8 rayhit{};
     for(int i = 0; i < vQueryPoints.size(); ++i) {
         
         const int offset = i % ray_group_size;
@@ -235,11 +233,12 @@ std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oView
         rayhit.ray.mask   [offset] = -1;
         rayhit.ray.flags  [offset] = 0;
         rayhit.hit.geomID [offset] = RTC_INVALID_GEOMETRY_ID;
+        rayhit.hit.instID[0][offset] = RTC_INVALID_GEOMETRY_ID;
 
         // do ray intersect
         if(offset == ray_group_size - 1 || i == vQueryPoints.size() - 1) {
 
-            rtcIntersect8(vValidList+i-offset, scene, &rayhit, &m_oIntersectArgument);
+            rtcIntersect8(vValidList+i-offset, scene, &rayhit, &intersectArguments);
 
             for(int k = 0; k <= offset; ++k) {
                 if(rayhit.hit.geomID[k] != RTC_INVALID_GEOMETRY_ID)
@@ -256,7 +255,7 @@ std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oView
         pcl::PointXYZ oUnitVec;
         oUnitVec.getVector3fMap() = (vQueryPoints[i].getVector3fMap() - oViewPoint.getVector3fMap()).normalized();
 
-        struct RTCRayHit rayhit;
+        struct RTCRayHit rayhit{};
         rayhit.ray.org_x = vQueryPoints[i].x;
         rayhit.ray.org_y = vQueryPoints[i].y;
         rayhit.ray.org_z = vQueryPoints[i].z;
@@ -270,7 +269,7 @@ std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oView
         rayhit.hit.geomID = RTC_INVALID_GEOMETRY_ID;
         rayhit.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
 
-        rtcIntersect1(scene, &rayhit, &m_oIntersectArgument);
+        rtcIntersect1(scene, &rayhit, &intersectArguments);
 
         if (rayhit.hit.geomID != RTC_INVALID_GEOMETRY_ID) vHitDis[i] = rayhit.ray.tfar;
 
@@ -280,98 +279,59 @@ std::vector<float> SdfMaker::CastRay(RTCScene& scene, const pcl::PointXYZ& oView
     return vHitDis;
 }
 
-void SdfMaker::CastRay(RTCScene & scene, const pcl::PointXYZ& oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel>& vQueryPoints) 
+void SdfMaker::CastRay(RTCScene & scene, const pcl::PointXYZ& oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel>& vQueryPoints)
 {
-    constexpr int bit_move = 3;
-    constexpr int ray_group_size = 1 << bit_move;
-    constexpr int valid_mask = -1;
-    constexpr int invalid_mask = 0;
+    // One argument object per call is required because sector queries execute
+    // concurrently in MeshUpdater's worker pool.
+    RTCIntersectArguments intersectArguments;
+    rtcInitIntersectArguments(&intersectArguments);
+    intersectArguments.flags = RTC_RAY_QUERY_FLAG_COHERENT;
 
-    // make valid list, to fit the ray group size.
-    int iListSize = vQueryPoints.size() >> bit_move << bit_move;
-    if(iListSize < vQueryPoints.size()) iListSize += ray_group_size;
-    std::vector<int> vValidVector(iListSize);
-    int* vValidList = vValidVector.data();
-    memset(vValidList, valid_mask, iListSize * sizeof(int));
-    for(int i = vQueryPoints.size(); i < iListSize; ++i) vValidList[i] = invalid_mask;
-
-    // make rayhit packages
-    RTCRayHit8 rayhit, downhit, uphit;
-    for(int i = 0; i < vQueryPoints.size(); ++i) {
-        
-        const int offset = i % ray_group_size;
-        vQueryPoints[i].io = -std::numeric_limits<float>().infinity();
-        Eigen::Vector3f vRayVec = vQueryPoints[i].getVector3fMap() - oViewPoint.getVector3fMap();
-        vQueryPoints[i].distance = vRayVec.norm();
-        vRayVec /= vQueryPoints[i].distance;
-
-        rayhit.ray.org_x  [offset] = oViewPoint.x;
-        rayhit.ray.org_y  [offset] = oViewPoint.y;
-        rayhit.ray.org_z  [offset] = oViewPoint.z;
-        rayhit.ray.dir_x  [offset] = vRayVec.x();
-        rayhit.ray.dir_y  [offset] = vRayVec.y();
-        rayhit.ray.dir_z  [offset] = vRayVec.z();
-        rayhit.ray.tnear  [offset] = 0.1f;
-        rayhit.ray.tfar   [offset] = std::numeric_limits<float>::infinity();
-        rayhit.ray.mask   [offset] = -1;
-        rayhit.ray.flags  [offset] = 0;
-        rayhit.hit.geomID [offset] = RTC_INVALID_GEOMETRY_ID;
-
-        // another ray to keep the floor
-        downhit.ray.org_x  [offset] = vQueryPoints[i].x;
-        downhit.ray.org_y  [offset] = vQueryPoints[i].y;
-        downhit.ray.org_z  [offset] = vQueryPoints[i].z;
-        downhit.ray.dir_x  [offset] = 0.0f;
-        downhit.ray.dir_y  [offset] = 0.0f;
-        downhit.ray.dir_z  [offset] = -1.0f;
-        downhit.ray.tnear  [offset] = 0.1f;
-        downhit.ray.tfar   [offset] = std::numeric_limits<float>::infinity();
-        downhit.ray.mask   [offset] = -1;
-        downhit.ray.flags  [offset] = 0;
-        downhit.hit.geomID [offset] = RTC_INVALID_GEOMETRY_ID;
-
-        // another ray to keep the floor
-        uphit.ray.org_x  [offset] = vQueryPoints[i].x;
-        uphit.ray.org_y  [offset] = vQueryPoints[i].y;
-        uphit.ray.org_z  [offset] = vQueryPoints[i].z;
-        uphit.ray.dir_x  [offset] = 0.0f;
-        uphit.ray.dir_y  [offset] = 0.0f;
-        uphit.ray.dir_z  [offset] = 1.0f;
-        uphit.ray.tnear  [offset] = 0.1f;
-        uphit.ray.tfar   [offset] = std::numeric_limits<float>::infinity();
-        uphit.ray.mask   [offset] = -1;
-        uphit.ray.flags  [offset] = 0;
-        uphit.hit.geomID [offset] = RTC_INVALID_GEOMETRY_ID;
-
-        // do ray intersect
-        if(offset == ray_group_size - 1 || i == vQueryPoints.size() - 1) {
-
-            rtcIntersect8(vValidList+i-offset, scene, &rayhit, &m_oIntersectArgument);
-            rtcIntersect8(vValidList+i-offset, scene, &downhit, &m_oIntersectArgument);
-            rtcIntersect8(vValidList+i-offset, scene, &uphit, &m_oIntersectArgument);
-
-            for(int k = 0; k <= offset; ++k) {
-
-                pcl::DistanceIoVoxel& oQueryPoint = vQueryPoints[i-offset+k];
-
-                if(rayhit.hit.geomID[k] != RTC_INVALID_GEOMETRY_ID) {
-                    float sdf = rayhit.ray.tfar[k] - oQueryPoint.distance;
-                    oQueryPoint.io = sdf < 0 ? 0.0f : 1.0f;
-                    oQueryPoint.distance = abs(sdf);
-                    if(downhit.hit.geomID[k] != RTC_INVALID_GEOMETRY_ID) {
-                        float sdf = downhit.ray.tfar[k];
-                        oQueryPoint.distance = std::min(oQueryPoint.distance, abs(sdf));
-                    }
-                    if(uphit.hit.geomID[k] != RTC_INVALID_GEOMETRY_ID) {
-                        float sdf = uphit.ray.tfar[k];
-                        oQueryPoint.distance = std::min(oQueryPoint.distance, abs(sdf));
-                    }
-                }
-                else {
-                    oQueryPoint.io = 0.0f;
-                    oQueryPoint.distance = std::numeric_limits<float>::infinity();
-                }
-            }
+    for (auto& oQueryPoint : vQueryPoints) {
+        Eigen::Vector3f vRayVec = oQueryPoint.getVector3fMap() - oViewPoint.getVector3fMap();
+        oQueryPoint.distance = vRayVec.norm();
+        if (oQueryPoint.distance <= std::numeric_limits<float>::epsilon()) {
+            oQueryPoint.io = 0.0f;
+            continue;
         }
+        vRayVec /= oQueryPoint.distance;
+
+        RTCRayHit rayhit{}, downhit{}, uphit{};
+        auto initializeRay = [](RTCRayHit& hit, float ox, float oy, float oz, float dx, float dy, float dz) {
+            hit.ray.org_x = ox;
+            hit.ray.org_y = oy;
+            hit.ray.org_z = oz;
+            hit.ray.dir_x = dx;
+            hit.ray.dir_y = dy;
+            hit.ray.dir_z = dz;
+            hit.ray.tnear = 0.1f;
+            hit.ray.tfar = std::numeric_limits<float>::infinity();
+            hit.ray.mask = -1;
+            hit.ray.flags = 0;
+            hit.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+            hit.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+        };
+
+        initializeRay(rayhit, oViewPoint.x, oViewPoint.y, oViewPoint.z, vRayVec.x(), vRayVec.y(), vRayVec.z());
+        initializeRay(downhit, oQueryPoint.x, oQueryPoint.y, oQueryPoint.z, 0.0f, 0.0f, -1.0f);
+        initializeRay(uphit, oQueryPoint.x, oQueryPoint.y, oQueryPoint.z, 0.0f, 0.0f, 1.0f);
+
+        rtcIntersect1(scene, &rayhit, &intersectArguments);
+        rtcIntersect1(scene, &downhit, &intersectArguments);
+        rtcIntersect1(scene, &uphit, &intersectArguments);
+
+        if (rayhit.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
+            oQueryPoint.io = 0.0f;
+            oQueryPoint.distance = std::numeric_limits<float>::infinity();
+            continue;
+        }
+
+        float sdf = rayhit.ray.tfar - oQueryPoint.distance;
+        oQueryPoint.io = sdf < 0 ? 0.0f : 1.0f;
+        oQueryPoint.distance = std::abs(sdf);
+        if (downhit.hit.geomID != RTC_INVALID_GEOMETRY_ID)
+            oQueryPoint.distance = std::min(oQueryPoint.distance, std::abs(downhit.ray.tfar));
+        if (uphit.hit.geomID != RTC_INVALID_GEOMETRY_ID)
+            oQueryPoint.distance = std::min(oQueryPoint.distance, std::abs(uphit.ray.tfar));
     }
 }

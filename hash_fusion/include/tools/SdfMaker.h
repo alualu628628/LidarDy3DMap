@@ -10,6 +10,7 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree.h>
 #include <unordered_map>
+#include <mutex>
 
 #include "DebugManager.h"
 #include "BoundingBox.h"
@@ -43,7 +44,6 @@ private:
     struct Triangle { int v0, v1, v2; };
 
 	RTCDevice InitializeDevice(const char* config);
-	void SetDefaultIntersectMode();
 	RTCScene PushSingleMeshToScene(const pcl::PointCloud<pcl::PointXYZI> & vClouds, const std::vector<pcl::Vertices> & vMeshVertices);
 	std::vector<float> CastRay(RTCScene & scene, const pcl::PointXYZ& oViewPoint, const pcl::PointCloud<pcl::PointXYZ>& vQueryPoints);
 
@@ -52,8 +52,11 @@ private:
     
     static void ErrorCallback(void* userPtr, enum RTCError error, const char* str);
 
-    RTCDevice m_pDevice;
-    RTCIntersectArguments m_oIntersectArgument;
+	RTCDevice m_pDevice;
+	// The bundled Embree build crashes when packet intersections from several
+	// worker threads run concurrently.  Scene construction remains asynchronous;
+	// only the Embree query itself is serialized.
+	std::mutex m_oIntersectMutex;
 	TimeDebugger m_oTimeDebugger;
 	std::unordered_map<int, RTCScene> m_vpScene;
 };

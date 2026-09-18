@@ -56,6 +56,9 @@ aux_source_directory(src DIR_SRCS)
 
 ###### build ########
 add_executable(simple_frame ${DIR_SRCS})
+
+# Ensure message headers from fusion_msgs are generated before compiling.
+add_dependencies(simple_frame ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(simple_frame ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${VTK_LIBRARIES} glog)
 
 # 
