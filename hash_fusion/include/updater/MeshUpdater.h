@@ -269,7 +269,8 @@ public:
     VolumeBase& oVolume,
     bool bKeepVoxel,
     pcl::PointCloud<pcl::DistanceIoVoxel>& locale_free_space,
-	pcl::PointCloud<pcl::DistanceIoVoxel>& global_free_space);
+	pcl::PointCloud<pcl::DistanceIoVoxel>& global_free_space,
+    bool publishGlobalFreeSpace);
 
     void GhprConvertCloud(
         const pcl::PointXYZI & oCenter, 

@@ -19,7 +19,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 <launch>
 
     <!-- Per-frame static/dynamic/free-space PLY files and timing CSVs. -->
-    <arg name="dy_output_path" default="/home/vcc/ros_ws/output/hash_fusion/" />
+    <arg name="dy_output_path" default="" />
 
     <arg name="sub_cloud_topic" default="/frame_recon/frame_cloudnormals" />
     <arg name="sub_mesh_topic" default="/frame_recon/frame_mesh_algo" />
@@ -79,8 +79,9 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
     <arg name="conv_distance_ref" default="0.95" />
 
     <arg name="center_based_recon" default="true" />
-    <arg name="dynamic_debug" default="true" />
-    <arg name="keep_voxel" default="true" />
+    <arg name="dynamic_debug" default="false" />
+    <arg name="keep_voxel" default="false" />
+    <arg name="publish_global_free_space" default="false" />
     <arg name="recon_range" default="80.0" /> <!-- 80 for show -->
     
     <!-- hot map -->
@@ -146,6 +147,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
         <param name="recon_range" type="double" value="$(arg recon_range)" />
         <param name="dynamic_debug" type="bool" value="$(arg dynamic_debug)" />
         <param name="keep_voxel" type="bool" value="$(arg keep_voxel)" />
+        <param name="publish_global_free_space" type="bool" value="$(arg publish_global_free_space)" />
         <param name="octree_level" type="int" value="$(arg octree_level)" />
         
         <!-- dynamic judge params-->

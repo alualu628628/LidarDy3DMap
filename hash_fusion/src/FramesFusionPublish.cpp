@@ -135,7 +135,7 @@ void FramesFusion::PublishStaticCloud(const pcl::PointCloud<pcl::PointNormal> & 
 	StaticCloudPublisher.publish(vCloudData);
 }
 
-void FramesFusion::PublishFreeSpace(const pcl::PointCloud<pcl::DistanceIoVoxel> & locale_free_space, const pcl::PointCloud<pcl::DistanceIoVoxel> & global_free_space){
+void FramesFusion::PublishFreeSpace(const pcl::PointCloud<pcl::DistanceIoVoxel> & locale_free_space, const pcl::PointCloud<pcl::DistanceIoVoxel> & global_free_space, bool publishGlobalFreeSpace){
 
     //convert to pc2 message
 	sensor_msgs::PointCloud2 localeCloudData;
@@ -156,7 +156,7 @@ void FramesFusion::PublishFreeSpace(const pcl::PointCloud<pcl::DistanceIoVoxel> 
 		locale_points.push_back(point);
 	}
 
-	for(int i=0;i<global_free_space.size();i++)
+	for(int i=0; publishGlobalFreeSpace && i<global_free_space.size();i++)
 	{
 		if(global_free_space.points[i].io < 0.5) continue; // 剔除靠近mesh的空间体素
 		pcl::_PointDistanceIo point;
@@ -181,12 +181,14 @@ void FramesFusion::PublishFreeSpace(const pcl::PointCloud<pcl::DistanceIoVoxel> 
 
 	//publish
 	localeFreeSpacePublisher.publish(localeCloudData);
-	globalFreeSpacePublisher.publish(golbalCloudData);
+	if(publishGlobalFreeSpace)
+		globalFreeSpacePublisher.publish(golbalCloudData);
 		if(outputFiles) {
 		std::stringstream localOutputPath, golbalOutputPath;
 		localOutputPath << outputPathList["locale_free_space"] << "dy_" << std::setw(4) << std::setfill('0') << pcFrameCount << "_fs_locale.ply";
 		golbalOutputPath << outputPathList["global_free_space"] << "dy_" << std::setw(4) << std::setfill('0') << pcFrameCount << "_fs_global.ply";
 		pcl::io::savePLYFileBinary(localOutputPath.str(), locale_points);
-		pcl::io::savePLYFileBinary(golbalOutputPath.str(), global_points);
+		if(publishGlobalFreeSpace)
+			pcl::io::savePLYFileBinary(golbalOutputPath.str(), global_points);
 	}
 }

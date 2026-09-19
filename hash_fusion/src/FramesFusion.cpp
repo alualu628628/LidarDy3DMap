@@ -237,6 +237,7 @@ bool FramesFusion::ReadLaunchParams(ros::NodeHandle & nodeHandle) {
 	nodeHandle.param("conv_distance_ref", convFusionDistanceRef1, 0.95f);
 	nodeHandle.param("dynamic_debug", dynamicDebug, false);
 	nodeHandle.param("keep_voxel", keepVoxel, false);
+	nodeHandle.param("publish_global_free_space", publishGlobalFreeSpace, false);
 	// m_pSdf = new SignedDistance(keepTime, convDim, convAddPointNumRef, convFusionDistanceRef1);
 	// distanceIoVolume->m_iMaxRecentKeep = max(500u, (uint32_t)keepTime);
 	// hashVoxeler.m_iMaxRecentKeep = max(500u, (uint32_t)keepTime);
@@ -271,12 +272,15 @@ void FramesFusion::HandleCloud(const sensor_msgs::PointCloud2 & vCloud) {
 
     pcl::PointCloud<pcl::PointNormal> staticPoints, dynamicPoints;
     for(auto& oPoint : oCloud) {
-        if(pDistanceIoVolume->SearchSdf(oPoint.getVector3fMap()) <= pDistanceIoVolume->GetStaticExpandDistance()) {
-			if(oPoint.curvature == -1) { //标识码
-				viewPoint = oPoint;
-			}
-			else	staticPoints.push_back(oPoint);
-        }
+		if(oPoint.curvature == -1) { // viewpoint marker is always retained
+			viewPoint = oPoint;
+			continue;
+		}
+        const float sdf = pDistanceIoVolume->SearchSdf(oPoint.getVector3fMap());
+        // Sparse/unobserved map cells are unknown, not static evidence.
+        if(!std::isfinite(sdf)) continue;
+        if(sdf <= pDistanceIoVolume->GetStaticExpandDistance())
+			staticPoints.push_back(oPoint);
 		else dynamicPoints.push_back(oPoint);
     }
 
@@ -351,12 +355,13 @@ void FramesFusion::HandleMesh(const fusion_msgs::MeshArray & vMeshRosData)
 								vMeshConfidence, 
 								*distanceIoVolume, 
 								dynamicDebug || keepVoxel,
-								locale_free_space, 
-								global_free_space);
+								locale_free_space,
+								global_free_space,
+                                publishGlobalFreeSpace);
 
 		double frames_fusion_time = fuse_timer.DebugTime("2_main_fusion");
 		
-		PublishFreeSpace(locale_free_space, global_free_space);
+		PublishFreeSpace(locale_free_space, global_free_space, publishGlobalFreeSpace);
 
 		averageFusionTime += frames_fusion_time;
 		maxFusionTime = frames_fusion_time > maxFusionTime ? frames_fusion_time : maxFusionTime;

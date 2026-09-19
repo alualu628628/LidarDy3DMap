@@ -115,7 +115,7 @@ public:
     void PublishPointCloud(const pcl::PointCloud<pcl::PointNormal> & vCloudNormal);
     void PublishDynamicCloud(const pcl::PointCloud<pcl::PointNormal> & vDynamicPoints);
     void PublishStaticCloud(const pcl::PointCloud<pcl::PointNormal> & vStaticPoints);
-    void PublishFreeSpace(const pcl::PointCloud<pcl::DistanceIoVoxel> & locale_free_space, const pcl::PointCloud<pcl::DistanceIoVoxel> & global_free_space);
+    void PublishFreeSpace(const pcl::PointCloud<pcl::DistanceIoVoxel> & locale_free_space, const pcl::PointCloud<pcl::DistanceIoVoxel> & global_free_space, bool publishGlobalFreeSpace);
 
     // in FramesFusionOutFile.cpp: 输出点云、mesh、SDFmap 保存文件 
     void SaveFinalMeshAndPointCloud();
@@ -274,6 +274,7 @@ protected:
     bool dynamicDebug;
     bool centerBasedRecon;
     bool keepVoxel;
+    bool publishGlobalFreeSpace;
     float confidenceLevelLength;
 
     // // sdf

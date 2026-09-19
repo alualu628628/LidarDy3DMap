@@ -644,7 +644,7 @@ void MeshUpdater::UpdateVolume(
                 pDistanceIoVolume->CreateAndGetCornersAABB(oBoundingBox.GetMinBound(), oBoundingBox.GetMaxBound().cwiseMin(vLimitZ), iLevel))));
             auto pCorners = vCorners.back();
             tasks.emplace_back(m_oThreadPool.AddTask([&,i,pCorners](){
-                m_oSdfMaker.QuerySdf(oViewPoint, *pCorners, i);
+                m_oSdfMaker.QueryLos(oViewPoint, *pCorners, i);
                 pDistanceIoVolume->Update(*pCorners);
             }));
         }
@@ -659,7 +659,7 @@ void MeshUpdater::UpdateVolume(
             auto pNewCorner = vNewCorners.back();
             for(auto sub_corner : sub_corners) {
                 tasks.emplace_back(m_oThreadPool.AddTask([&,i,sub_corner,pNewCorner](){
-                    m_oSdfMaker.QuerySdf(oViewPoint, *sub_corner, i);
+                    m_oSdfMaker.QueryLos(oViewPoint, *sub_corner, i);
                     pDistanceIoVolume->Update(*sub_corner);
                     std::unique_lock<std::mutex> lock(mCornerCombine);
                     *pNewCorner += *sub_corner;
@@ -707,7 +707,7 @@ void MeshUpdater::UpdateVisibleVolume(
         auto pCornerPoints = pDistanceIoVolume->CreateAndGetCornersByPos(vVoxelPoses, iLevel);
         vCorners.emplace_back(pCornerPoints);
         tasks.emplace_back(m_oThreadPool.AddTask([&, i, pCornerPoints](){
-            m_oSdfMaker.QuerySdf(oViewPoint, *pCornerPoints, i);
+            m_oSdfMaker.QueryLos(oViewPoint, *pCornerPoints, i);
             pDistanceIoVolume->UpdateLimitDistance(*pCornerPoints, iLevel);
         }));
     }
@@ -746,7 +746,7 @@ void MeshUpdater::UpdateVolumeFromBottom(
             pDistanceIoVolume->CreateAndGetCornersAABB(oBoundingBox.GetMinBound(), oBoundingBox.GetMaxBound().cwiseMin(vLimitZ), iLevel))));
         auto pCorners = vCorners.back();
         tasks.emplace_back(m_oThreadPool.AddTask([&,i,pCorners](){
-            m_oSdfMaker.QuerySdf(oViewPoint, *pCorners, i);
+            m_oSdfMaker.QueryLos(oViewPoint, *pCorners, i);
             pDistanceIoVolume->Update(*pCorners);
         }));
     }
@@ -774,7 +774,7 @@ void MeshUpdater::UpdateVolumeFromBottom(
             auto pCornerPoints = pDistanceIoVolume->CreateAndGetCornersByPos(vVoxelPoses, level);
             vCorners.emplace_back(pCornerPoints);
             tasks.emplace_back(m_oThreadPool.AddTask([&, i, pCornerPoints](){
-                m_oSdfMaker.QuerySdf(oViewPoint, *pCornerPoints, i);
+                m_oSdfMaker.QueryLos(oViewPoint, *pCornerPoints, i);
                 pDistanceIoVolume->Update(*pCornerPoints);
             }));
         }
@@ -1001,7 +1001,8 @@ void MeshUpdater::MeshFusion(
     VolumeBase& oVolume,
     bool bKeepVoxel,
     pcl::PointCloud<pcl::DistanceIoVoxel>& locale_free_space,
-	pcl::PointCloud<pcl::DistanceIoVoxel>& global_free_space)
+	pcl::PointCloud<pcl::DistanceIoVoxel>& global_free_space,
+    bool publishGlobalFreeSpace)
 {
     m_oFuseTimer.NewLine();
     DistanceIoVolume* pDistanceIoVolume = dynamic_cast<DistanceIoVolume*>(&oVolume);
@@ -1082,17 +1083,18 @@ void MeshUpdater::MeshFusion(
     pDistanceIoVolume->Fuse(*pLocalVolume);
     m_oFuseTimer.DebugTime("4_voxelize");
 
-    // show global voxel result
-    vAllCorners.clear();
-    associate.clear();
-    for(auto&& vVoxelList : pDistanceIoVolume->m_vVolumeData) {
-        for(auto&& oVoxel : vVoxelList) {
-            // if(oVoxel.io == 0.0) continue;
-            if(oVoxel.distance > 1.5f) continue;
-            vAllCorners.push_back(oVoxel);
-            associate.push_back(std::min(oVoxel.distance + 0.4f, 1.0f));
-            associate2.push_back(oVoxel.io > 0.5f ? 0.8f : -1.0f);
-            global_free_space.push_back(oVoxel);
+    if(publishGlobalFreeSpace) {
+        // Global scans are diagnostic-only and scale with the accumulated map.
+        vAllCorners.clear();
+        associate.clear();
+        for(auto&& vVoxelList : pDistanceIoVolume->m_vVolumeData) {
+            for(auto&& oVoxel : vVoxelList) {
+                if(oVoxel.distance > 1.5f) continue;
+                vAllCorners.push_back(oVoxel);
+                associate.push_back(std::min(oVoxel.distance + 0.4f, 1.0f));
+                associate2.push_back(oVoxel.io > 0.5f ? 0.8f : -1.0f);
+                global_free_space.push_back(oVoxel);
+            }
         }
     }
     // m_oRpManager.PublishPointCloud(vAllCorners, associate, "/global_distance_volume");

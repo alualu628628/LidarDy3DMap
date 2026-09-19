@@ -202,6 +202,7 @@ std::vector<pcl::PointCloud<pcl::DistanceIoVoxel>::Ptr> DistanceIoVolume::Create
 void DistanceIoVolume::Update(pcl::PointCloud<pcl::DistanceIoVoxel>& vCorners) {
 
     // io 属性的说明: io = 0 在表面外 | io = 1 在表面内
+    std::unordered_map<HashPos, pcl::DistanceIoVoxel, HashFunc> updates;
     for(auto& oCorner : vCorners) {
         
         // 只更新距离较近的外点
@@ -215,12 +216,16 @@ void DistanceIoVolume::Update(pcl::PointCloud<pcl::DistanceIoVoxel>& vCorners) {
         // 获取数据对象
         HashPos oPos;
         PointBelongVoxelPos(oCorner, oPos);
-        auto& oVoxel = CreateAndGetVoxel(oPos);
-        
-        // combine code
-        std::unique_lock<std::mutex> lock(m_mVolumeDataMutex);
-        oVoxel.io = oVoxel.io == 0.0f ? update_io : std::max(oVoxel.io, update_io);
-        oVoxel.distance = std::max(oVoxel.distance, oCorner.distance);
+        auto& update = updates[oPos];
+        update.io = update.io == 0.0f ? update_io : std::max(update.io, update_io);
+        update.distance = std::max(update.distance, oCorner.distance);
+    }
+
+    std::unique_lock<std::mutex> lock(m_mVolumeDataMutex);
+    for(const auto& [oPos, update] : updates) {
+        auto& oVoxel = CreateAndGetVoxelLocked(oPos);
+        oVoxel.io = oVoxel.io == 0.0f ? update.io : std::max(oVoxel.io, update.io);
+        oVoxel.distance = std::max(oVoxel.distance, update.distance);
     }
 }
 
@@ -228,6 +233,7 @@ void DistanceIoVolume::UpdateLimitDistance(pcl::PointCloud<pcl::DistanceIoVoxel>
 
     const float limit_distance = m_fStaticExpandDistance * (1 << iLevel);
 
+    std::unordered_map<HashPos, pcl::DistanceIoVoxel, HashFunc> updates;
     for(auto& oCorner : vCorners) {
 
         float& update_io = oCorner.io;
@@ -237,12 +243,16 @@ void DistanceIoVolume::UpdateLimitDistance(pcl::PointCloud<pcl::DistanceIoVoxel>
         if(update_io == 0.0f) continue;
         HashPos oPos;
         PointBelongVoxelPos(oCorner, oPos);
-        auto& oVoxel = CreateAndGetVoxel(oPos);
+        auto& update = updates[oPos];
+        update.io = update.io == 0.0f ? update_io : std::max(update.io, update_io);
+        update.distance = std::max(update.distance, oCorner.distance);
+    }
 
-        // combine code
-        std::unique_lock<std::mutex> lock(m_mVolumeDataMutex);
-        oVoxel.io = oVoxel.io == 0.0f ? update_io : std::max(oVoxel.io, update_io);
-        oVoxel.distance = std::max(oVoxel.distance, oCorner.distance);
+    std::unique_lock<std::mutex> lock(m_mVolumeDataMutex);
+    for(const auto& [oPos, update] : updates) {
+        auto& oVoxel = CreateAndGetVoxelLocked(oPos);
+        oVoxel.io = oVoxel.io == 0.0f ? update.io : std::max(oVoxel.io, update.io);
+        oVoxel.distance = std::max(oVoxel.distance, update.distance);
         oVoxel.distance = std::min(oVoxel.distance, limit_distance);
     }
 }
@@ -257,10 +267,11 @@ void DistanceIoVolume::Fuse(DistanceIoVolume& oLocal) {
     // 对于一种情况似乎需要特殊处理，当一个位置之前是细分区域，
     // 而这个位置在当前帧是非细分区域，这时的更新就要下放到低层级，这一步似乎非常拖慢速度
     // lazy 标记或许是一种方法?
+    std::unique_lock<std::mutex> lock(m_mVolumeDataMutex);
     for(auto&& [oPos,oVoxelIndex] : oLocal.m_vVolume) {
         const pcl::DistanceIoVoxel& oLocalVoxel = oLocal.GetVoxelData(oVoxelIndex);
         if(oLocalVoxel.io == 0.0f) continue;
-        pcl::DistanceIoVoxel& oGlobalVoxel = CreateAndGetVoxel(oPos);
+        pcl::DistanceIoVoxel& oGlobalVoxel = CreateAndGetVoxelLocked(oPos);
         oGlobalVoxel.Update(oLocalVoxel.distance, oLocalVoxel.io == 1.0f);
     }
 }
@@ -325,16 +336,18 @@ int DistanceIoVolume::SearchIo(const HashPos& oPos, size_t iMaxLevel) {
  * 
 */
 pcl::DistanceIoVoxel& DistanceIoVolume::CreateAndGetVoxel(const HashPos& oPos) {
-    
+
     std::unique_lock<std::mutex> lock(m_mVolumeDataMutex);
+    return CreateAndGetVoxelLocked(oPos);
+}
+
+pcl::DistanceIoVoxel& DistanceIoVolume::CreateAndGetVoxelLocked(const HashPos& oPos) {
     if(!m_vVolume.count(oPos)) {
-        if(!m_vVolume.count(oPos)) {
-            if(m_vVolumeData.size() == 0 || m_vVolumeData.back().size() == m_vVolumeData.back().points.capacity()) {
-                VolumeDataMoveNext();
-            }
-            m_vVolumeData.back().push_back(HashPosTo3DPos<pcl::DistanceIoVoxel>(oPos));
-            m_vVolume.insert(std::make_pair(oPos, pcl::VoxelIndex(m_vVolumeData.size()-1, m_vVolumeData.back().size()-1)));
+        if(m_vVolumeData.size() == 0 || m_vVolumeData.back().size() == m_vVolumeData.back().points.capacity()) {
+            VolumeDataMoveNext();
         }
+        m_vVolumeData.back().push_back(HashPosTo3DPos<pcl::DistanceIoVoxel>(oPos));
+        m_vVolume.insert(std::make_pair(oPos, pcl::VoxelIndex(m_vVolumeData.size()-1, m_vVolumeData.back().size()-1)));
     }
 
     pcl::VoxelIndex& index = m_vVolume[oPos];

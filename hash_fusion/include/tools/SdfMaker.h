@@ -36,6 +36,9 @@ public:
 	void NewScene(const pcl::PointCloud<pcl::PointXYZI> & vClouds, const std::vector<pcl::Vertices> & vMeshVertices, const int iSectorId);
 	// sprite function, second query
 	void QuerySdf(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel> & vQueryPoints, const int iSectorId);
+	// Visibility-only query used by the live fusion path.  A point is marked
+	// known only when its ray intersects the sector mesh; a miss stays unknown.
+	void QueryLos(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel> & vQueryPoints, const int iSectorId);
 
 	tools::BoundingBox GetBoundingBox(const int iSectorId);
 
@@ -49,6 +52,7 @@ private:
 
 	// record the result into the query points' io/distance attribute
 	void CastRay(RTCScene & scene, const pcl::PointXYZ& oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel>& vQueryPoints);
+	void CastLos(RTCScene & scene, const pcl::PointXYZ& oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel>& vQueryPoints);
     
     static void ErrorCallback(void* userPtr, enum RTCError error, const char* str);
 

@@ -134,6 +134,9 @@ public:
 
 private:
   pcl::DistanceIoVoxel& CreateAndGetVoxel(const HashPos& oPos);
+  // Caller holds m_mVolumeDataMutex.  Kept separate so one query batch can
+  // update many voxels without taking the map lock for every corner.
+  pcl::DistanceIoVoxel& CreateAndGetVoxelLocked(const HashPos& oPos);
   std::array<HashPos, 8> GetCornerPoses(const HashPos& oPos, size_t iLevel) const;
   float InterpolateCorners(const HashPos& oPos, const Eigen::Vector3f& vPoint, size_t iLevel);
   float GetSdf(const pcl::DistanceIoVoxel& oVoxel) const;

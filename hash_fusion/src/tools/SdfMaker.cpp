@@ -55,6 +55,20 @@ void SdfMaker::QuerySdf(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::D
     CastRay(scene, oViewPoint, vQueryPoints);
 }
 
+void SdfMaker::QueryLos(const pcl::PointXYZ & oViewPoint, pcl::PointCloud<pcl::DistanceIoVoxel> & vQueryPoints, const int iSectorId)
+{
+    RTCScene& scene = m_vpScene[iSectorId];
+    if(scene == nullptr) {
+        ROS_ERROR("The Scene %d not find!", iSectorId);
+        return;
+    }
+
+    // The bundled Embree runtime must not be queried concurrently.  Packet
+    // traversal still removes the old three scalar intersections per voxel.
+    std::lock_guard<std::mutex> lock(m_oIntersectMutex);
+    CastLos(scene, oViewPoint, vQueryPoints);
+}
+
 tools::BoundingBox SdfMaker::GetBoundingBox(const int iSectorId) {
 
     // get ref of the scene id 
@@ -333,5 +347,66 @@ void SdfMaker::CastRay(RTCScene & scene, const pcl::PointXYZ& oViewPoint, pcl::P
             oQueryPoint.distance = std::min(oQueryPoint.distance, std::abs(downhit.ray.tfar));
         if (uphit.hit.geomID != RTC_INVALID_GEOMETRY_ID)
             oQueryPoint.distance = std::min(oQueryPoint.distance, std::abs(uphit.ray.tfar));
+    }
+}
+
+void SdfMaker::CastLos(RTCScene& scene, const pcl::PointXYZ& oViewPoint,
+                       pcl::PointCloud<pcl::DistanceIoVoxel>& vQueryPoints)
+{
+    RTCIntersectArguments intersectArguments;
+    rtcInitIntersectArguments(&intersectArguments);
+    intersectArguments.flags = RTC_RAY_QUERY_FLAG_COHERENT;
+
+    constexpr size_t kPacketSize = 8;
+    for(size_t base = 0; base < vQueryPoints.size(); base += kPacketSize) {
+        RTCRayHit8 rayhit{};
+        int valid[kPacketSize]{};
+        float queryRange[kPacketSize]{};
+        const size_t count = std::min(kPacketSize, vQueryPoints.size() - base);
+
+        for(size_t lane = 0; lane < count; ++lane) {
+            pcl::DistanceIoVoxel& query = vQueryPoints[base + lane];
+            // A no-hit is not proof of free space: preserve it as unknown.
+            query.io = 0.0f;
+            query.distance = std::numeric_limits<float>::infinity();
+            query.weight = 0.0f;
+
+            Eigen::Vector3f ray = query.getVector3fMap() - oViewPoint.getVector3fMap();
+            queryRange[lane] = ray.norm();
+            if(queryRange[lane] <= std::numeric_limits<float>::epsilon())
+                continue;
+
+            ray /= queryRange[lane];
+            valid[lane] = -1;
+            rayhit.ray.org_x[lane] = oViewPoint.x;
+            rayhit.ray.org_y[lane] = oViewPoint.y;
+            rayhit.ray.org_z[lane] = oViewPoint.z;
+            rayhit.ray.dir_x[lane] = ray.x();
+            rayhit.ray.dir_y[lane] = ray.y();
+            rayhit.ray.dir_z[lane] = ray.z();
+            rayhit.ray.tnear[lane] = 0.1f;
+            rayhit.ray.tfar[lane] = std::numeric_limits<float>::infinity();
+            rayhit.ray.mask[lane] = -1;
+            rayhit.ray.flags[lane] = 0;
+            rayhit.hit.geomID[lane] = RTC_INVALID_GEOMETRY_ID;
+            rayhit.hit.instID[0][lane] = RTC_INVALID_GEOMETRY_ID;
+        }
+
+        bool hasValidRay = false;
+        for(size_t lane = 0; lane < count; ++lane)
+            hasValidRay = hasValidRay || valid[lane] != 0;
+        if(!hasValidRay)
+            continue;
+
+        rtcIntersect8(valid, scene, &rayhit, &intersectArguments);
+        for(size_t lane = 0; lane < count; ++lane) {
+            if(valid[lane] == 0 || rayhit.hit.geomID[lane] == RTC_INVALID_GEOMETRY_ID)
+                continue;
+            pcl::DistanceIoVoxel& query = vQueryPoints[base + lane];
+            const float signedMargin = rayhit.ray.tfar[lane] - queryRange[lane];
+            query.io = signedMargin >= 0.0f ? 1.0f : 0.0f;
+            query.distance = std::abs(signedMargin);
+            query.weight = 1.0f;
+        }
     }
 }
