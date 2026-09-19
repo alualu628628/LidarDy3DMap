@@ -4,8 +4,11 @@
 #include "GHPR.h"
 #include "SectorPartition.h"
 #include "MeshOperation.h"
+#include "tools/TaskPool.h"
 
 #include <shape_msgs/Mesh.h>
+
+#include <memory>
 
 #define PI 3.1415926
 
@@ -46,6 +49,8 @@ public:
 	~ExplicitRec();
 
 	void SetMultiThread(const bool bMultiThread) { m_bMultiThread = bMultiThread; }
+	void SetUseCgalBackend(const bool use_cgal) { m_bUseCgalBackend = use_cgal; }
+	void SetWorkerCount(const int worker_count) { m_iRequestedWorkerCount = worker_count; m_pTaskPool.reset(); }
 
 	//set the viewpoint location
 	void SetViewPoint(const pcl::PointXYZI & oViewPoint);
@@ -124,6 +129,10 @@ private:
 
 	//wether to use the multi-thread algorithm
 	bool m_bMultiThread;
+	// Convex-hull implementation and sector scheduling are intentionally separate.
+	bool m_bUseCgalBackend = true;
+	int m_iRequestedWorkerCount = 0;
+	std::unique_ptr<simple_frame::TaskPool> m_pTaskPool;
 
 };
 

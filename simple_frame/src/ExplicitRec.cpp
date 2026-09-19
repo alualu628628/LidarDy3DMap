@@ -12,7 +12,7 @@
 #include <algorithm>
 
 
-ExplicitRec::ExplicitRec() :m_bElevationFlag(false),m_pCenterNormal(new pcl::PointCloud<pcl::PointNormal>){
+ExplicitRec::ExplicitRec() :m_bElevationFlag(false),m_bMultiThread(true),m_pCenterNormal(new pcl::PointCloud<pcl::PointNormal>){
 
 
 
@@ -196,18 +196,17 @@ void ExplicitRec::FrameReconstruction(const pcl::PointCloud<pcl::PointXYZI> & vS
 	//多线程分离Normal
 	std::vector<pcl::PointCloud<pcl::PointNormal>> vCombinedNormalList;
 	vCombinedNormalList.resize(vPointSecIdxs.size());
-	std::mutex convex_hull;
-	std::vector<std::thread> thread_pool;
 	std::vector<std::function<void(void)>> thread_func(vPointSecIdxs.size());
 	const bool bMultiThread = m_bMultiThread;
 
 	for(int i = 0; i != vPointSecIdxs.size(); ++i) {
-		thread_func[i] = [&, i, bMultiThread]() { 
+		thread_func[i] = [&, i, bMultiThread]() {
 			//If the points in a sector is sufficient to calculate
 			if (vPointSecIdxs[i].size() > m_iSectorMinPNum){
 
 				//point clouds inside one sector
 				pcl::PointCloud<pcl::PointXYZI>::Ptr pSectorCloud(new pcl::PointCloud<pcl::PointXYZI>);
+				pSectorCloud->reserve(vPointSecIdxs[i].size() + (m_bElevationFlag ? 2 : 0) + 1);
 
 				//get a point clouds in one section
 				for (int j = 0; j != vPointSecIdxs[i].size(); ++j) {
@@ -235,8 +234,8 @@ void ExplicitRec::FrameReconstruction(const pcl::PointCloud<pcl::PointXYZI> & vS
 				GHPR hpdhpr(m_oViewPoint, m_GHPRParam);
 
 				//perform reconstruction
-				if(bMultiThread)
-					hpdhpr.ComputeMultiThread(pSectorCloud);
+				if(m_bUseCgalBackend)
+					hpdhpr.ComputeCGAL(pSectorCloud);
 				else
 					hpdhpr.Compute(pSectorCloud);
 
@@ -344,19 +343,29 @@ void ExplicitRec::FrameReconstruction(const pcl::PointCloud<pcl::PointXYZI> & vS
 		};
 	}
 	
-	if(bMultiThread) {
-
-		//triangular mesh in each sector
-		for (int i = 0; i != vPointSecIdxs.size(); ++i)
-			thread_pool.emplace_back(thread_func[i]);
-
-		for(int i = 0; i != vPointSecIdxs.size(); ++i)
-				thread_pool[i].join(); 
+	std::vector<int> active_sectors;
+	for (int i = 0; i < static_cast<int>(vPointSecIdxs.size()); ++i) {
+		if (vPointSecIdxs[i].size() > m_iSectorMinPNum) active_sectors.push_back(i);
+		else thread_func[i]();
 	}
-	else {
+	std::sort(active_sectors.begin(), active_sectors.end(), [&](int lhs, int rhs) {
+		return vPointSecIdxs[lhs].size() > vPointSecIdxs[rhs].size();
+	});
 
-		for(int i = 0; i != vPointSecIdxs.size(); ++i)
-			thread_func[i]();
+	if (bMultiThread && !active_sectors.empty()) {
+		const unsigned int hardware_threads = std::max(1u, std::thread::hardware_concurrency());
+		const unsigned int requested_threads = m_iRequestedWorkerCount > 0
+			? static_cast<unsigned int>(m_iRequestedWorkerCount) : hardware_threads;
+		const unsigned int worker_count = std::min<unsigned int>(
+			std::min<unsigned int>(requested_threads, hardware_threads), active_sectors.size());
+		if (!m_pTaskPool) m_pTaskPool.reset(new simple_frame::TaskPool(worker_count));
+
+		std::vector<std::future<void>> tasks;
+		tasks.reserve(active_sectors.size());
+		for (const int sector : active_sectors) tasks.emplace_back(m_pTaskPool->Submit(thread_func[sector]));
+		for (std::future<void>& task : tasks) task.get();
+	} else {
+		for (const int sector : active_sectors) thread_func[sector]();
 	}
 
 
@@ -395,8 +404,6 @@ void ExplicitRec::OriginalReconstruction(const pcl::PointCloud<pcl::PointXYZI> &
 	//多线程分离Normal
 	std::vector<pcl::PointCloud<pcl::PointNormal>> vCombinedNormalList;
 	vCombinedNormalList.resize(vPointSecIdxs.size());
-	std::mutex convex_hull;
-	std::vector<std::thread> thread_pool;
 	std::vector<std::function<void(void)>> thread_func(vPointSecIdxs.size());
 	const bool bMultiThread = m_bMultiThread;
 
@@ -408,6 +415,7 @@ void ExplicitRec::OriginalReconstruction(const pcl::PointCloud<pcl::PointXYZI> &
 
 				//point clouds inside one sector
 				pcl::PointCloud<pcl::PointXYZI>::Ptr pSectorCloud(new pcl::PointCloud<pcl::PointXYZI>);
+				pSectorCloud->reserve(vPointSecIdxs[i].size() + (m_bElevationFlag ? 2 : 0) + 1);
 
 				//get a point clouds in one section
 				for (int j = 0; j != vPointSecIdxs[i].size(); ++j) {
@@ -434,8 +442,8 @@ void ExplicitRec::OriginalReconstruction(const pcl::PointCloud<pcl::PointXYZI> &
 				GHPR hpdhpr(m_oViewPoint, m_GHPRParam);
 
 				//perform reconstruction
-				if(bMultiThread)
-					hpdhpr.ComputeMultiThread(pSectorCloud);
+				if(m_bUseCgalBackend)
+					hpdhpr.ComputeCGAL(pSectorCloud);
 				else
 					hpdhpr.Compute(pSectorCloud);
 
@@ -518,19 +526,29 @@ void ExplicitRec::OriginalReconstruction(const pcl::PointCloud<pcl::PointXYZI> &
 		};
 	}
 	
-	if(bMultiThread) {
-
-		//triangular mesh in each sector
-		for (int i = 0; i != vPointSecIdxs.size(); ++i)
-			thread_pool.emplace_back(thread_func[i]);
-
-		for(int i = 0; i != vPointSecIdxs.size(); ++i)
-				thread_pool[i].join(); 
+	std::vector<int> active_sectors;
+	for (int i = 0; i < static_cast<int>(vPointSecIdxs.size()); ++i) {
+		if (vPointSecIdxs[i].size() > m_iSectorMinPNum) active_sectors.push_back(i);
+		else thread_func[i]();
 	}
-	else {
+	std::sort(active_sectors.begin(), active_sectors.end(), [&](int lhs, int rhs) {
+		return vPointSecIdxs[lhs].size() > vPointSecIdxs[rhs].size();
+	});
 
-		for(int i = 0; i != vPointSecIdxs.size(); ++i)
-			thread_func[i]();
+	if (bMultiThread && !active_sectors.empty()) {
+		const unsigned int hardware_threads = std::max(1u, std::thread::hardware_concurrency());
+		const unsigned int requested_threads = m_iRequestedWorkerCount > 0
+			? static_cast<unsigned int>(m_iRequestedWorkerCount) : hardware_threads;
+		const unsigned int worker_count = std::min<unsigned int>(
+			std::min<unsigned int>(requested_threads, hardware_threads), active_sectors.size());
+		if (!m_pTaskPool) m_pTaskPool.reset(new simple_frame::TaskPool(worker_count));
+
+		std::vector<std::future<void>> tasks;
+		tasks.reserve(active_sectors.size());
+		for (const int sector : active_sectors) tasks.emplace_back(m_pTaskPool->Submit(thread_func[sector]));
+		for (std::future<void>& task : tasks) task.get();
+	} else {
+		for (const int sector : active_sectors) thread_func[sector]();
 	}
 
 	//output 1ms
@@ -574,8 +592,6 @@ void ExplicitRec::OriginalAndShowReconstruction(const pcl::PointCloud<pcl::Point
 	//多线程分离Normal
 	std::vector<pcl::PointCloud<pcl::PointNormal>> vCombinedNormalList;
 	vCombinedNormalList.resize(vPointSecIdxs.size());
-	std::mutex convex_hull;
-	std::vector<std::thread> thread_pool;
 	std::vector<std::function<void(void)>> thread_func(vPointSecIdxs.size());
 	const bool bMultiThread = m_bMultiThread;
 
@@ -587,6 +603,7 @@ void ExplicitRec::OriginalAndShowReconstruction(const pcl::PointCloud<pcl::Point
 
 				//point clouds inside one sector
 				pcl::PointCloud<pcl::PointXYZI>::Ptr pSectorCloud(new pcl::PointCloud<pcl::PointXYZI>);
+				pSectorCloud->reserve(vPointSecIdxs[i].size() + (m_bElevationFlag ? 2 : 0) + 1);
 
 				//get a point clouds in one section
 				for (int j = 0; j != vPointSecIdxs[i].size(); ++j) {
@@ -615,8 +632,8 @@ void ExplicitRec::OriginalAndShowReconstruction(const pcl::PointCloud<pcl::Point
 				GHPR hpdhpr(m_oViewPoint, m_GHPRParam);
 
 				//perform reconstruction
-				if(bMultiThread)
-					hpdhpr.ComputeMultiThread(pSectorCloud);
+				if(m_bUseCgalBackend)
+					hpdhpr.ComputeCGAL(pSectorCloud);
 				else
 					hpdhpr.Compute(pSectorCloud);
 
@@ -729,19 +746,29 @@ void ExplicitRec::OriginalAndShowReconstruction(const pcl::PointCloud<pcl::Point
 		};
 	}
 	
-	if(bMultiThread) {
-
-		//triangular mesh in each sector
-		for (int i = 0; i != vPointSecIdxs.size(); ++i)
-			thread_pool.emplace_back(thread_func[i]);
-
-		for(int i = 0; i != vPointSecIdxs.size(); ++i)
-				thread_pool[i].join(); 
+	std::vector<int> active_sectors;
+	for (int i = 0; i < static_cast<int>(vPointSecIdxs.size()); ++i) {
+		if (vPointSecIdxs[i].size() > m_iSectorMinPNum) active_sectors.push_back(i);
+		else thread_func[i]();
 	}
-	else {
+	std::sort(active_sectors.begin(), active_sectors.end(), [&](int lhs, int rhs) {
+		return vPointSecIdxs[lhs].size() > vPointSecIdxs[rhs].size();
+	});
 
-		for(int i = 0; i != vPointSecIdxs.size(); ++i)
-			thread_func[i]();
+	if (bMultiThread && !active_sectors.empty()) {
+		const unsigned int hardware_threads = std::max(1u, std::thread::hardware_concurrency());
+		const unsigned int requested_threads = m_iRequestedWorkerCount > 0
+			? static_cast<unsigned int>(m_iRequestedWorkerCount) : hardware_threads;
+		const unsigned int worker_count = std::min<unsigned int>(
+			std::min<unsigned int>(requested_threads, hardware_threads), active_sectors.size());
+		if (!m_pTaskPool) m_pTaskPool.reset(new simple_frame::TaskPool(worker_count));
+
+		std::vector<std::future<void>> tasks;
+		tasks.reserve(active_sectors.size());
+		for (const int sector : active_sectors) tasks.emplace_back(m_pTaskPool->Submit(thread_func[sector]));
+		for (std::future<void>& task : tasks) task.get();
+	} else {
+		for (const int sector : active_sectors) thread_func[sector]();
 	}
 
 	//output 1ms

@@ -109,9 +109,15 @@ bool FrameRecon::ReadLaunchParams(ros::NodeHandle &nodeHandle) {
     // height of viewpoint
     nodeHandle.param("viewp_zoffset", viewZOffset, 0.0f);
 
-    bool bMultiThread;
-    nodeHandle.param("multi_thread", bMultiThread, true);
-    meshAlgoBuilder.SetMultiThread(bMultiThread);
+	bool bMultiThread;
+	nodeHandle.param("multi_thread", bMultiThread, true);
+	meshAlgoBuilder.SetMultiThread(bMultiThread);
+	bool useCgalBackend;
+	nodeHandle.param("use_cgal_backend", useCgalBackend, true);
+	meshAlgoBuilder.SetUseCgalBackend(useCgalBackend);
+	int ghprWorkerThreads;
+	nodeHandle.param("ghpr_worker_threads", ghprWorkerThreads, 0);
+	meshAlgoBuilder.SetWorkerCount(ghprWorkerThreads);
 
     nodeHandle.param("is_debug", isDebug, false);
 

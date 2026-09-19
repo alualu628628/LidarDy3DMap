@@ -5,6 +5,10 @@
 #include <CGAL/convex_hull_3.h>
 #include <vector>
 #include <algorithm>
+#include <cstring>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
 
 typedef CGAL::Exact_predicates_inexact_constructions_kernel  K;
 typedef K::Point_3                                Point_3;
@@ -113,9 +117,7 @@ Function: geometric inversion transformation, it converts points from world into
 void GHPR::ConvertCloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud){
 
 	m_pTransCloud->clear();
-
-	//the modulus of each point
-	std::vector<float> vNormEachPoint;
+	m_pTransCloud->reserve(pCloud->size() + 1);
 
 	//get local coordinates based on the viewpoint 
 	for (int i = 0; i != pCloud->points.size(); ++i){
@@ -128,23 +130,16 @@ void GHPR::ConvertCloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud){
 		oOnePoint.y = pCloud->points[i].y - m_oViewPInWorld.y;
 		oOnePoint.z = pCloud->points[i].z - m_oViewPInWorld.z;
 		oOnePoint.intensity = pCloud->points[i].intensity;
+		const float length = oOnePoint.getVector3fMap().norm();
+		// A point at the viewpoint has no GHPR direction.  Keep it at the
+		// origin so CGAL receives finite coordinates and the caller can reject
+		// degenerate faces normally.
+		if (length > std::numeric_limits<float>::epsilon()) {
+			oOnePoint.getVector3fMap() *= 100.0f / length;
+		} else {
+			oOnePoint.getVector3fMap().setZero();
+		}
 		m_pTransCloud->points.push_back(oOnePoint);
-
-		//calculate the modulus length
-		vNormEachPoint.push_back(NormVector(oOnePoint));
-	}
-
-
-	//get the radius of local coordiante system
-	m_fRadius = pow(10.0, param)*GetMaxValue(vNormEachPoint);
-
-	//
-	for (size_t i = 0; i != m_pTransCloud->points.size(); i++){
-		// float numerator = 2 * (m_fRadius - vNormEachPoint[i]);
-		// m_pTransCloud->points[i].x = m_pTransCloud->points[i].x + numerator*m_pTransCloud->points[i].x / vNormEachPoint[i];
-		// m_pTransCloud->points[i].y = m_pTransCloud->points[i].y + numerator*m_pTransCloud->points[i].y / vNormEachPoint[i];
-		// m_pTransCloud->points[i].z = m_pTransCloud->points[i].z + numerator*m_pTransCloud->points[i].z / vNormEachPoint[i];
-		m_pTransCloud->points[i].getVector3fMap() = 100 * m_pTransCloud->points[i].getVector3fMap().normalized();
 	}
 
 	//set the viewpoint at the original value
@@ -155,7 +150,7 @@ void GHPR::ConvertCloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud){
 	oLocalViewPoint.intensity = 16;
 	m_pTransCloud->points.push_back(oLocalViewPoint);
 
-	//Now, the transposed transformed radius has been obtained
+	// Retained for the legacy overload that still uses m_fRadius.
 	m_bComputeRadius = true;
 
 }
@@ -288,10 +283,14 @@ Function: <## MultiThread Version## >
 		The main function of the class GHPR. It is to calculate the visibility of a viewpoint and a given point set.
 		Besides, it also obtains the rough model from the given perspective (viewpoint).
 ========================================*/
-void GHPR::ComputeMultiThread(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud, bool bIndexRelation){
+void GHPR::ComputeCGAL(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud, bool bIndexRelation){
 
 	//convert point cloud
 	ConvertCloud(pCloud);
+	m_pHullVertices->clear();
+	m_vHullPolygonIdxs.clear();
+	m_vHullInInputIdx.clear();
+	m_bToWorldIndex = false;
 	//get the viewpoint idx
 	m_iViewWorldIdx = m_pTransCloud->points.size() - 1;
 
@@ -304,21 +303,60 @@ void GHPR::ComputeMultiThread(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pClou
 	reconstructLock.unlock();
 	//*/
 
-	// /* cgal reconstruct
-    std::vector<Point_3> cgal_cloud;
-    for(auto& point : *m_pTransCloud) 
-        cgal_cloud.emplace_back(point.x, point.y, point.z);
+	struct PointKey {
+		std::uint32_t x, y, z;
+		bool operator==(const PointKey& other) const {
+			return x == other.x && y == other.y && z == other.z;
+		}
+	};
+	struct PointKeyHash {
+		std::size_t operator()(const PointKey& key) const {
+			std::size_t hash = key.x;
+			hash = hash * 0x9e3779b1u + key.y;
+			return hash * 0x9e3779b1u + key.z;
+		}
+	};
+	auto make_key = [](float x, float y, float z) {
+		PointKey key{};
+		std::memcpy(&key.x, &x, sizeof(float));
+		std::memcpy(&key.y, &y, sizeof(float));
+		std::memcpy(&key.z, &z, sizeof(float));
+		return key;
+	};
 
-    Surface_mesh cgal_mesh;
-    CGAL::convex_hull_3(cgal_cloud.begin(), cgal_cloud.end(), cgal_mesh);
+	// A transformed-coordinate map gives an exact, deterministic hull-to-input
+	// relationship.  CGAL coalesces duplicate points; the first input index is
+	// retained for that explicitly documented degenerate case.
+	std::unordered_map<PointKey, int, PointKeyHash> input_index;
+	input_index.reserve(m_pTransCloud->size());
+	    std::vector<Point_3> cgal_cloud;
+	    cgal_cloud.reserve(m_pTransCloud->size());
+	    for(std::size_t index = 0; index < m_pTransCloud->size(); ++index) {
+	        const auto& point = m_pTransCloud->points[index];
+	        cgal_cloud.emplace_back(point.x, point.y, point.z);
+	        const PointKey key = make_key(point.x, point.y, point.z);
+	        // Keep the first scan point for coincident transformed samples, but
+	        // make the appended viewpoint authoritative at the origin.
+	        if (index + 1 == m_pTransCloud->size()) input_index[key] = static_cast<int>(index);
+	        else input_index.emplace(key, static_cast<int>(index));
+	    }
 
-    for(auto& point : cgal_mesh.points()) {
-        pcl::PointXYZI pcl_point;
-        pcl_point.x = point.x();
-        pcl_point.y = point.y();
-        pcl_point.z = point.z();
-        m_pHullVertices->push_back(pcl_point);
-    }
+	    Surface_mesh cgal_mesh;
+	    CGAL::convex_hull_3(cgal_cloud.begin(), cgal_cloud.end(), cgal_mesh);
+	    auto output_index = cgal_mesh.add_property_map<Surface_mesh::Vertex_index, int>("v:output_index", -1).first;
+
+	    for(const Surface_mesh::Vertex_index vertex : cgal_mesh.vertices()) {
+	        const Point_3& point = cgal_mesh.point(vertex);
+	        pcl::PointXYZI pcl_point;
+	        pcl_point.x = static_cast<float>(point.x());
+	        pcl_point.y = static_cast<float>(point.y());
+	        pcl_point.z = static_cast<float>(point.z());
+	        const auto found = input_index.find(make_key(pcl_point.x, pcl_point.y, pcl_point.z));
+	        if (found == input_index.end()) continue;
+	        put(output_index, vertex, static_cast<int>(m_pHullVertices->size()));
+	        m_pHullVertices->push_back(pcl_point);
+	        if (bIndexRelation) m_vHullInInputIdx.push_back(found->second);
+	    }
 
     for(auto& face : cgal_mesh.faces()) {
         CGAL::Vertex_around_face_iterator<Surface_mesh> vbegin, vend;
@@ -327,25 +365,26 @@ void GHPR::ComputeMultiThread(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pClou
             vbegin != vend;
             ++vbegin) 
         {
-            auto vertex = *vbegin;
-            pcl_vertice.vertices.push_back(*reinterpret_cast<int*>(&vertex));
-        }
-        m_vHullPolygonIdxs.push_back(pcl_vertice);
-    }
-	//*/
+			const Surface_mesh::Vertex_index vertex = *vbegin;
+			const int index = get(output_index, vertex);
+			if (index >= 0) pcl_vertice.vertices.push_back(static_cast<std::uint32_t>(index));
+	        }
+	        if (pcl_vertice.vertices.size() == 3 &&
+	            pcl_vertice.vertices[0] != pcl_vertice.vertices[1] &&
+	            pcl_vertice.vertices[1] != pcl_vertice.vertices[2] &&
+	            pcl_vertice.vertices[0] != pcl_vertice.vertices[2]) {
+	            m_vHullPolygonIdxs.push_back(pcl_vertice);
+	        }
+	    }
 
-	//Check if a correspondence needs to be established from convex hull to input set with viewpoint
-	//It is risk because the third - party (e.g.,PCL) implementation with differnet version would get a uniform point order 
 	if (bIndexRelation){
-
-		//construt a relationship between vertice and input point with viewpoint
-		IndexFromHulltoInput(m_pHullVertices);
-
-		//the index relationship has been established
 		m_bToWorldIndex = true;
-
 	}
 
+}
+
+void GHPR::ComputeMultiThread(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud, bool bIndexRelation){
+	ComputeCGAL(pCloud, bIndexRelation);
 }
 
 /*=======================================

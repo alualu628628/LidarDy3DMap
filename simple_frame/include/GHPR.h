@@ -48,6 +48,9 @@ public:
 
 	//compute visibility
 	void Compute(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud, bool bIndexRelation = true);
+	// CGAL convex-hull backend.  This is independent from sector parallelism.
+	void ComputeCGAL(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud, bool bIndexRelation = true);
+	// Compatibility alias retained for external callers from older versions.
 	void ComputeMultiThread(const pcl::PointCloud<pcl::PointXYZI>::Ptr & pCloud, bool bIndexRelation = true);
 
 	//output occluded points index in point clouds

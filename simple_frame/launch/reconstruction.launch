@@ -55,6 +55,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
     <arg name="viewp_zoffset" default="1.2"/> 
 
     <arg name="is_multi_thread" default="true"/>
+	<!-- Hull backend and sector scheduler are deliberately independent. -->
+	<arg name="use_cgal_backend" default="true"/>
+	<!-- 0 means min(hardware concurrency, active sector count). -->
+	<arg name="ghpr_worker_threads" default="0"/>
     <arg name="is_debug" default="false" />
 
     <arg name="use_ghpr" default="true"/>
@@ -100,6 +104,8 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
         <param name="viewp_zoffset" type="double" value="$(arg viewp_zoffset)"/>
       
         <param name="multi_thread" type="bool" value="$(arg is_multi_thread)" />
+		<param name="use_cgal_backend" type="bool" value="$(arg use_cgal_backend)" />
+		<param name="ghpr_worker_threads" type="int" value="$(arg ghpr_worker_threads)" />
         <!-- Whether to display debug information -->
         <param name="is_debug" type="bool" value="$(arg is_debug)" />
 
